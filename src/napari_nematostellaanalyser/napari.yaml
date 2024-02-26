@@ -18,18 +18,9 @@ contributions:
     - id: napari-nematostellaanalyser.make_sample_data
       python_name: napari_nematostellaanalyser._sample_data:make_sample_data
       title: Load sample data from Nematostella Sleepdetector
-    - id: napari-nematostellaanalyser.make_container_widget
-      python_name: napari_nematostellaanalyser:ImageThreshold
-      title: Make threshold Container widget
-    - id: napari-nematostellaanalyser.make_magic_widget
-      python_name: napari_nematostellaanalyser:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: napari-nematostellaanalyser.make_function_widget
-      python_name: napari_nematostellaanalyser:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: napari-nematostellaanalyser.make_qwidget
-      python_name: napari_nematostellaanalyser:ExampleQWidget
-      title: Make example QWidget
+    - id: napari-nematostellaanalyser.nematostella_detector
+      python_name: napari_nematostellaanalyser:nematostella_detector
+      title: Process Imaging Stack
   readers:
     - command: napari-nematostellaanalyser.get_reader
       accepts_directories: false
@@ -46,12 +37,5 @@ contributions:
       display_name: Nematostella Sleepdetector
       key: unique_id.1
   widgets:
-    - command: napari-nematostellaanalyser.make_container_widget
-      display_name: Container Threshold
-    - command: napari-nematostellaanalyser.make_magic_widget
-      display_name: Magic Threshold
-    - command: napari-nematostellaanalyser.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: napari-nematostellaanalyser.make_qwidget
-      display_name: Example QWidget
+    - command: napari-nematostellaanalyser.nematostella_detector
+      display_name: Process Imaging Stack
