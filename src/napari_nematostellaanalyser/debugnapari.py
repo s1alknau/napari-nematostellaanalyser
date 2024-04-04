@@ -13,4 +13,5 @@ for i in range(100):
 
 viewer = napari.Viewer()
 viewer.add_image(np.array(mImages), name="testImages")
+
 input('Press Enter to exit')

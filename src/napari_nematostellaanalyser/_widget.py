@@ -1,12 +1,21 @@
-from qtpy.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox
+from qtpy.QtWidgets import QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox, QScrollArea, QMessageBox
+from PyQt5.QtCore import pyqtSignal, pyqtSlot, QObject
+
+import io
 import numpy as np
 import napari
 from skimage.feature import canny
 from skimage.transform import hough_circle, hough_circle_peaks
+import matplotlib
+matplotlib.use('Agg')  # Set the backend to 'Agg'
+
 import matplotlib.pyplot as plt
 import cv2
-
+import threading
+import h5py
 class nematostella_detector(QWidget):
+    add_image_signal = pyqtSignal(np.ndarray, str)
+    show_message_signal = pyqtSignal(str)  # Add this line
     def __init__(self, viewer: "napari.viewer.Viewer"):
         super().__init__()
         self.viewer = viewer
@@ -15,6 +24,27 @@ class nematostella_detector(QWidget):
 
         # Main layout
         layout = QVBoxLayout()
+        
+        # Instead of setting layout directly to self, wrap it in a scrollable area
+        scrollArea = QScrollArea()  # Create a new QScrollArea
+        scrollArea.setWidgetResizable(True)  # Make the scroll area resizable
+
+        # Create a container widget and set your layout on it
+        containerWidget = QWidget()
+        containerWidget.setLayout(layout)
+        
+        # Set the container widget as the scroll area's widget
+        scrollArea.setWidget(containerWidget)
+
+        # Main layout for the scrollable content
+        mainLayout = QVBoxLayout()
+        mainLayout.addWidget(scrollArea)  # Add the scroll area to the main layout
+        
+        self.setLayout(mainLayout)  # Set the main layout to the class
+
+        # link signals
+        self.add_image_signal.connect(self.displayImage)
+        self.show_message_signal.connect(self.displayPopUpMessage)
 
         # Step 1: Load Image Stack
         self.layer_dropdown = QComboBox()
@@ -34,7 +64,7 @@ class nematostella_detector(QWidget):
         detect_button.clicked.connect(self.detect_circles)
         self.param1_input = QLineEdit("100")
         self.param2_input = QLineEdit("50")
-        self.minRadius_input = QLineEdit("50")
+        self.minRadius_input = QLineEdit("80")
         self.maxRadius_input = QLineEdit("150")
         self.frame_number_input = QLineEdit("1")
         self.circles_list = QLabel("Detected circles will be listed here.")
@@ -58,10 +88,15 @@ class nematostella_detector(QWidget):
         # Step 3: Detect Baseline
         baseline_button = QPushButton("Detect Baseline")
         baseline_button.clicked.connect(self.detect_baseline)
-        self.frames_input = QLineEdit("0-100")
+        self.minFramePos_input = QLineEdit("0")
+        self.maxFramePos_input = QLineEdit("10")
         layout.addWidget(QLabel("Step 3 - Detect Baseline"))
+        layout.addWidget(QLabel("Min Frame Position:"))
+        layout.addWidget(self.minFramePos_input)
+        layout.addWidget(QLabel("Max Frame Position:"))
+        layout.addWidget(self.maxFramePos_input)    
         layout.addWidget(baseline_button)
-        layout.addWidget(self.frames_input)
+        
 
         # Step 4: Determine Sleep Behaviour
         sleep_button = QPushButton("Determine Sleep Behaviour")
@@ -77,6 +112,18 @@ class nematostella_detector(QWidget):
         self.mData = self.viewer.layers[self.selected_layer_name].data
         # Implement your logic here
 
+    def displayPopUpMessage(self, message):
+        msgBox = QMessageBox()
+        msgBox.setIcon(QMessageBox.Information)
+        msgBox.setText(message)
+        msgBox.setWindowTitle("Information")
+        msgBox.setStandardButtons(QMessageBox.Ok)
+        msgBox.exec_()
+
+    @pyqtSlot(np.ndarray, str)
+    def displayImage(self, mImage, layerName):
+        self.viewer.add_image(mImage, name=layerName, colormap='gray')
+
     def refresh_image_stack(self):
         print("Refreshing image stack")
         self.layer_dropdown.addItems([layer.name for layer in self.viewer.layers])
@@ -87,6 +134,7 @@ class nematostella_detector(QWidget):
         minRadius = int(self.minRadius_input.text())
         maxRadius = int(self.maxRadius_input.text())
         frame_number = int(self.frame_number_input.text())
+        self.viewer.dims.set_point(value=frame_number, axis=0)
         if 0:
             param1 = 100
             param2 = 50
@@ -96,6 +144,7 @@ class nematostella_detector(QWidget):
         
         # Optionally convert the frame to grayscale
         if self.mData is None or type(self.mData)!=np.ndarray:
+            self.displayPopUpMessage("Please first select the data you want to process!")
             return
         if len(self.mData)>3: # RGB
             mFrame = self.mData[int(frame_number),:,:,:]
@@ -125,8 +174,9 @@ class nematostella_detector(QWidget):
 
                 # Create a mask with the same dimensions as the image, initially filled with zeros (black)
                 mask = np.zeros_like(frame_gray)
+                cv2.circle(mask, center, radius, (255), thickness=-1)
                 allMasks.append(mask)
-
+                
                 if 0:
                     # Fill the circle in the mask with ones (white)
                     cv2.circle(mask, center, radius, (255), thickness=-1)
@@ -146,14 +196,24 @@ class nematostella_detector(QWidget):
         print("Clearing circle selection")
         self.circles_list.setText("Circle selection cleared.")
         self.viewer.layers["Detected ROIs"].data= np.empty((0,2))
-        # Implement your logic here
-
-    def detect_baseline(self):
-        if self.allMasks is None:
-            return
-        frames = self.frames_input.text()
+        self.circles = None
+        self.allMasks = None
         
-        frame_gray = cv2.cvtColor(self.mData[0], cv2.COLOR_BGR2GRAY)
+    def detect_baseline(self):
+        self.is_detecting_baseline = True
+        self.thread = threading.Thread(target=self.detect_baseline_background)
+        self.thread.start()
+        
+    def detect_baseline_background(self):
+        if self.allMasks is None: 
+            self.displayPopUpMessage("Please first run the circle detection!")
+            return
+        # retreive parameters from GUI
+        min_frame_num = int(self.minFramePos_input.text())
+        max_frame_num = int(self.maxFramePos_input.text())
+            
+        # save the first frame
+        frame_gray = cv2.cvtColor(self.mData[min_frame_num], cv2.COLOR_BGR2GRAY)
         lastFrame = frame_gray/np.mean(frame_gray)
         allDiffs = []
         iFrame = 0
@@ -163,12 +223,18 @@ class nematostella_detector(QWidget):
             allTilesPerMask.append([])
 
         # iterate over all frames and compute the motion variance for each mask
-        for iFrame in self.mData:
+        # reserve some memory 
+        nFrames = max_frame_num-min_frame_num
+        nMasks = len(self.allMasks)
+        mMotionPerFramePerMask = np.zeros((nFrames, nMasks)) # dimensions: frameNumber, MaskNumber
+        frameMeans = np.zeros(nFrames)
+        for frameIndex, iFrame in enumerate(self.mData[min_frame_num:max_frame_num]):
             frame_gray = cv2.cvtColor(iFrame, cv2.COLOR_BGR2GRAY)
-            frame_gray = frame_gray/np.mean(frame_gray)
+            frameMeans[frameIndex] = np.mean(frame_gray)
+            frame_gray = frame_gray/frameMeans[frameIndex]
             
-            diffsPerMask = []
-            for index, mask in enumerate(self.allMasks):
+            # iterate over all masks (e.g. round well circles )
+            for maskIndex, mask in enumerate(self.allMasks):
                 # find roi of mask 
                 roi = np.where(mask>0)
                 roi = np.array([np.min(roi[0]), np.max(roi[0]), np.min(roi[1]), np.max(roi[1])])
@@ -185,28 +251,37 @@ class nematostella_detector(QWidget):
                 diff = cv2.filter2D(circle_pixels, ddepth=-1, kernel=circle_pixels_last)
                 # diff = scipy.signal.correlate2d(cv2.resize(circle_pixels,None, None, 0.25,0.25), cv2.resize(circle_pixels_last,None, None, 0.25,0.25), mode='full', boundary='fill', fillvalue=0)
                 # diff = cv2.absdiff(circle_pixels, circle_pixels_last)
-                
+                # store values for all masks
                 diffMean = np.mean(diff)
-                diffsPerMask.append(diffMean)
-                
-                allTilesPerMask[index].append(circle_pixels)
-            allDiffs.append(diffsPerMask/np.max(diffsPerMask))
+                mMotionPerFramePerMask[frameIndex, maskIndex] = diffMean
+            print("Processing Frame "+str(frameIndex)+" / "+str(max_frame_num-min_frame_num))
             lastFrame = frame_gray.copy()
-            #%%  
-            # visualize the motion variance
-            plt.plot(np.array(allDiffs))
-            plt.ylabel('Motion Variance')  
-            plt.xlabel('Frames')
-            # convert plot to temporary numpy array
-            plt.savefig('temp.png')
-            plt.close()
+        #%
+        # visualize the motion variance
+        fig, ax = plt.subplots()
+        for iMask in range(mMotionPerFramePerMask.shape[1]): # dimensions: frameNumber, MaskNumber
+            ax.plot(mMotionPerFramePerMask[:, iMask])
+        ax.set_ylabel('Motion Variance')  
+        ax.set_xlabel('Frames')
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)  # Go to the start of the buffer
+        imgplot = plt.imread(buf)
+        buf.close()
+        
+        # show the plot as a napari layer 
+        self.add_image_signal.emit(imgplot, "Motion Variance")
+        self.is_detecting_baseline = False
             
-            # show the plot as a napari layer 
-            self.viewer.add_image('temp.png', name='Motion Variance', colormap='gray')
-            
-        print("Detecting baseline using frames:", frames)
-        # Implement your logic here
-
+        # store values in HD5 file (frameMeans and mMotionPerFramePerMask)
+        # Creating the HDF5-file
+        with h5py.File('data.h5', 'w') as f:
+            # saving 
+            f.create_dataset('frameMeans', data=frameMeans)
+            f.create_dataset('mMotionPerFramePerMask', data=mMotionPerFramePerMask)
+        self.show_message_signal.emit("Baseline detection finished!")
+    
     def determine_sleep_behavior(self):
         print("Determining sleep behavior")
         # Implement your logic here
